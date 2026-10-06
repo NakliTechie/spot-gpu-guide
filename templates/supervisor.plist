@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent: restarts the tier-2 supervisor after a reboot or crash (RunAtLoad + KeepAlive).
+     A laptop crash kills every session-launched watcher, with no alert, until someone logs in.
+     Install: fill placeholders, copy to ~/Library/LaunchAgents/<label>.plist, then
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
+     Remove at retire: launchctl bootout gui/$(id -u)/<label>  and delete the file. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>LABEL_PLACEHOLDER</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>SUPERVISOR_CMD_PLACEHOLDER</string><string>supervise</string></array>
+  <key>WorkingDirectory</key><string>PROJECT_DIR_PLACEHOLDER</string>
+  <!-- PATH must reach gcloud: add its bin directory if it lives elsewhere (e.g. HOME/google-cloud-sdk/bin). -->
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string><key>HOME</key><string>HOME_PLACEHOLDER</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>LOG_PATH_PLACEHOLDER</string>
+  <key>StandardErrorPath</key><string>LOG_PATH_PLACEHOLDER</string>
+</dict></plist>
