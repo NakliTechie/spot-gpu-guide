@@ -54,7 +54,7 @@ while true; do
   live=$(gcloud compute instances list --filter="name~^$PREFIX-t$TIER-" --format='value(name)') \
     || { echo "$(now) instance list failed: skipping this round"; sleep 180; continue; }
   if [ -z "$live" ]; then
-    launches=$((launches + 1)); [ $launches -gt $MAX_LAUNCHES ] && { echo "too many launches"; exit 2; }
+    [ $launches -ge $MAX_LAUNCHES ] && { echo "$(now) $launches lives without ALL_DONE: stopping"; exit 2; }
     name=$PREFIX-t$TIER-$(date +%m%d-%H%M)
     for z in "${ZONES[@]}"; do
       # SPOT + termination DELETE + max-run-duration: the cloud-side last line of defence if this laptop dies.
@@ -64,6 +64,7 @@ while true; do
            --boot-disk-size 200GB --boot-disk-type pd-balanced --scopes cloud-platform \
            --metadata ^@^tier="$TIER"@bucket="$B"@install-nvidia-driver=True@eval_args="$EVAL_ARGS" \
            --metadata-from-file startup-script="$HERE/job.sh" --labels "$LABEL=true" >/dev/null 2>"$tmp/err"; then
+        launches=$((launches + 1))   # count lives, not attempts: rounds where no zone had capacity cost nothing
         echo "$(now) launch $launches: $name in $z (spend so far \$$spend)"; break
       elif grep -q -E 'ZONE_RESOURCE_POOL_EXHAUSTED|QUOTA[A-Z_]*|[A-Z_]*_EXCEEDED' "$tmp/err"; then
         echo "$(now) $z: $(grep -o -E 'ZONE_RESOURCE_POOL_EXHAUSTED|QUOTA[A-Z_]*|[A-Z_]*_EXCEEDED' "$tmp/err" | head -1)"

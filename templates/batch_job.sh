@@ -30,9 +30,14 @@ trap finish EXIT
 # After the trap: an unfilled placeholder then writes ERROR and the VM deletes itself instead of billing to its cap.
 grep -q "^[A-Z_]*=\"[^\"]*<[a-z]" "$0" && { echo "fill the placeholders at the top of $0 first"; exit 1; }
 ( while sleep 90; do push; done ) &
+# Preemption notice (~30 s on GCP): one last push of the log and finished units (GUIDE §2.7).
+( while :; do v=$(curl -sf -H "Metadata-Flavor: Google" "$MD/preempted?wait_for_change=true") || { sleep 5; continue; }
+    [ "$v" = TRUE ] && { echo "JOB preemption notice $(date -u +%H:%M:%SZ)"; push; break; }
+  done ) &
 
 echo "JOB boot $(date -u +%H:%M:%SZ) zone=$Z $(nvidia-smi --query-gpu=name --format=csv,noheader)"
-mkdir -p /opt/job && cd /opt/job && gcloud storage cp -q "$B/$CODE" repo.tgz && tar xzf repo.tgz && mkdir -p runs data inputs
+mkdir -p /opt/job && cd /opt/job && gcloud storage cp -q "$B/$CODE" repo.tgz && tar xzf repo.tgz && mkdir -p runs data inputs \
+  || { echo "JOB abort: code fetch failed"; exit 1; }   # exit 1 writes ERROR: a missing tarball will not fix itself on relaunch
 gcloud storage rsync -q -r "$OUT/runs" runs 2>/dev/null       # resume: the runner must skip units recorded here
 echo "JOB resume: $(find runs -type f | wc -l) files restored"
 # ---- data + deps: fill in (gcloud storage rsync -r $B/data data; uv sync; apt-get install -y g++ for JIT builds) ----

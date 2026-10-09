@@ -36,12 +36,12 @@ You rent one spot GPU because the quota allows one. It gets preempted mid-run. Y
 
 This repo is those rules plus the scripts that encode them: an idempotent VM job script, a local relaunch loop with a USD cap, a spend estimator from the operations log, a log follower, a detacher that survives session teardown, and a launchd agent that survives a reboot.
 
-**Use something else if** you want a managed layer instead of scripts you own. [SkyPilot](https://github.com/skypilot-org/skypilot) handles multi-cloud spot launch, recovery and cost comparison, and wins when you use more than one provider. [dstack](https://github.com/dstackai/dstack) wins when you want a declarative config over a fleet. [Modal](https://modal.com) wins when you accept a hosted runtime to avoid VMs entirely. This guide wins when you run one GPU on one cloud and want every failure mode visible in about 420 lines of shell and Python.
+**Use something else if** you want a managed layer instead of scripts you own. [SkyPilot](https://github.com/skypilot-org/skypilot) handles multi-cloud spot launch, recovery and cost comparison, and wins when you use more than one provider. [dstack](https://github.com/dstackai/dstack) wins when you want a declarative config over a fleet. [Modal](https://modal.com) wins when you accept a hosted runtime to avoid VMs entirely. This guide wins when you run one GPU on one cloud and want every failure mode visible in about 430 lines of shell and Python.
 
 ## What the guide covers
 
-1. Account, quota, billing: the 1-GPU reality, scoped identities with tag-gated teardown, AWS spot quota, price is not capacity, a region's network preflight, budgets that only email, prices from the catalog.
-2. A job that survives spot: bucket-held state, `DONE` markers, self-deleting VMs, `git archive HEAD`, the short preemption notice, checkpoint and adapter protocols, batch jobs with per-unit resume, artifacts mirrored as they form.
+1. Account, quota, billing: the 1-GPU reality, scoped identities with tag-gated teardown, AWS spot quota, price is not capacity, a region's network preflight, chatty components in one region, budgets that only email, prices from the catalog.
+2. A job that survives spot: bucket-held state, `DONE` markers, self-deleting VMs, `git archive HEAD`, the short preemption notice (GCP and AWS), background checkpoint upload, adapter protocols, batch jobs with per-unit resume, artifacts mirrored as they form, capacity that changes mid-run.
 3. Startup-script and VM gotchas: no `HOME`, the 64 KB line limit, buffered stdout, CPython shutdown crashes, falsy `0`, silent gating steps, build and mirror failures.
 4. Supervision: two tiers, reading the boot, watchdog requirements, a nightwatch with a hard deadline, detaching and surviving reboots, one supervisor per scope.
 5. Serverless GPU endpoints: billing is uptime, the two-process proxy, cached reads and a closed-port zero-spend proof, one driver per window.
@@ -71,19 +71,18 @@ The templates are generalised from scripts that ran real jobs, with project name
 ## Verify it yourself
 
 ```bash
-for f in templates/*.sh; do bash -n "$f"; done      # syntax
-python3 -m py_compile templates/spend.py            # syntax
-bash templates/run_tier.sh 0 1; echo $?             # placeholder guard: refuses, exit 1
-bash templates/relaunch.sh templates/job.env.example; echo $?   # placeholder guard: refuses, exit 1
-plutil -lint templates/supervisor.plist templates/launcher.plist   # macOS plist syntax
+./check.sh      # syntax of every template, all three placeholder guards refuse, plist lint, shellcheck (warning and above)
 ```
 
-These checks cover syntax and the placeholder guards only. The generalised templates have not yet run on a VM as such; their originals ran staged training, a multi-hour batch eval under launchd with a real relaunch, and exited on their `DONE` markers. The fail-safe paths added since (unknown spend launches nothing, a failed listing skips the round, only a capacity error moves to the next zone, a preemption never writes `ERROR`) are syntax-checked only. A filled-in plumbing pass on a new project is the open verification item.
+It exits 0 only when every check passes, and skips plist lint or shellcheck when the tool is missing. These checks
+cover syntax and the guards only. The generalised templates have not yet run on a VM as such; their originals ran
+staged training, a multi-hour batch eval under launchd with a real relaunch, and exited on their `DONE` markers. The
+fail-safe paths added since (unknown spend launches nothing, a failed listing skips the round, only a capacity error
+moves to the next zone, a preemption never writes `ERROR`, a failed code fetch does) and the preemption-notice
+watchers are syntax-checked only. A filled-in plumbing pass on a new project is the open verification item.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
 [GUIDE.md](GUIDE.md) · [checklists/](checklists/) · [templates/](templates/) · [launch video](marketing/launch.mp4)
-
-[GUIDE.md](GUIDE.md) · [checklists/](checklists/)

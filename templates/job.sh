@@ -24,6 +24,10 @@ LOG=$W/job-$(date -u +%Y%m%dT%H%M%S).log
 exec >>"$LOG" 2>&1
 # Push the job log to the bucket every 2 min: the VM can vanish at any moment.
 ( while sleep 120; do gcloud storage cp -q "$LOG" "$B/logs/tier$TIER/" 2>/dev/null; done ) &
+# Preemption notice (~30 s on GCP): flush the log, nothing bigger; checkpoints go up in the background (GUIDE §2.7).
+( while :; do v=$(curl -sf -H "Metadata-Flavor: Google" "$MD/preempted?wait_for_change=true") || { sleep 5; continue; }
+    [ "$v" = TRUE ] && { echo "== $(date -u) preemption notice"; gcloud storage cp -q "$LOG" "$B/logs/tier$TIER/"; break; }
+  done ) &
 R=$B/runs  # mirror root: <R>/tier<N>/<stage>
 finish() {
   rc=$?
@@ -39,9 +43,11 @@ trap finish EXIT
 
 echo "== $(date -u) start tier $TIER on $NAME ($ZONE)"; nvidia-smi -L
 # Code arrives as `git archive HEAD` from the launcher; the VM always runs a commit.
-gcloud storage cp -q "$B/code/code.tar.gz" . && tar xzf code.tar.gz
+# A failed fetch or install is an explicit failure: exit 1 writes ERROR, so the launcher stops instead of relaunching.
+gcloud storage cp -q "$B/code/code.tar.gz" . && tar xzf code.tar.gz || { echo "code fetch failed"; exit 1; }
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null && export PATH=$HOME/.local/bin:$PATH
-uv venv -q -p $PY_VERSION .venv && uv pip install -q --python .venv/bin/python -r requirements.txt
+uv venv -q -p $PY_VERSION .venv && uv pip install -q --python .venv/bin/python -r requirements.txt \
+  || { echo "dependency install failed"; exit 1; }
 PY=.venv/bin/python
 # PYTHONUNBUFFERED: pipe stdout is block-buffered; step logs otherwise appear an hour late.
 # TQDM_DISABLE: see the 64 KB line limit above.
@@ -50,11 +56,11 @@ export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 TQDM_DISABLE=1
 # ---- data: pull what the bucket has, build what it lacks, push it back ----
 # Gated datasets: download on the laptop with your token, upload the raw file to $B/data/raw/. Never put the token on the VM.
 mkdir -p data
-gcloud storage rsync -q "$B/data/tier$TIER" data 2>/dev/null
+gcloud storage rsync -q -r "$B/data/tier$TIER" data 2>/dev/null
 gcloud storage cp -q "$B/data/raw/*" data/ 2>/dev/null
 if [ ! -f data/DONE ]; then
   $PY $PREP_CMD "$TIER" --out data || { echo "data prep failed"; exit 1; }
-  touch data/DONE; gcloud storage rsync -q data "$B/data/tier$TIER"
+  touch data/DONE; gcloud storage rsync -q -r data "$B/data/tier$TIER"
 fi
 
 # ---- training, with a divergence rule: one restart from the last checkpoint, then stop ----

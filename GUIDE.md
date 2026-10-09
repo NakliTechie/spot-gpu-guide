@@ -3,7 +3,8 @@
 Run training, eval and inference jobs on rented GPUs from a laptop, unattended, without losing work or money.
 
 Every rule here comes from a failure in a real run. Each has three parts: the rule, the failure mode it prevents,
-and the fix, usually with a snippet. The scripts named here live in [`templates/`](templates/). GCP is the worked
+and the fix, usually with a snippet. A few rules come from a published write-up instead; those are marked
+**Published** and link their source. The scripts named here live in [`templates/`](templates/). GCP is the worked
 example for scripts; AWS-specific rules are marked **AWS**, and §9 covers orchestrators such as SkyPilot.
 
 Chapters: [1 Account, quota, billing](#1-account-quota-billing--before-any-code) ·
@@ -119,7 +120,15 @@ aws ec2 describe-route-tables --region <r> --filters Name=association.main,Value
   --query 'RouteTables[].Routes[?DestinationCidrBlock==`0.0.0.0/0`].[GatewayId,State]' --output text
 ```
 
-### 1.9 Cost tags lag; keep a local ledger
+### 1.9 Keep chatty components in one region
+- **Rule.** Pin the controller (trainer, driver, launcher-side service) and the GPU workers it calls to one region,
+  and check where the provider actually placed them before a long run. A per-call round trip is invisible in a
+  smoke test and dominant at scale.
+- **Published.** A trainer placed in `eu-north-1` with its inference replicas in US West crossed the Atlantic on
+  every model call; at ~100 calls per rollout that was minutes of pure network wait per rollout. The fix there was
+  to move the capture step into the replica ([Proximal, *Post-training infrastructure*](https://www.proximal.so/blog/posttraining-infra/)).
+
+### 1.10 Cost tags lag; keep a local ledger
 - **Rule.** Cost-allocation tags must be activated in billing and take about a day to populate. Activate them early,
   and keep a local launch ledger (§7.4) to bridge the lag.
 - **Rule.** Add a daily GPU-spend alert scoped by **instance family** (G/P on AWS), not by service or tag: it then
@@ -201,11 +210,16 @@ git archive --format=tar.gz HEAD -o "$tmp/code.tar.gz" && gcloud storage cp -q "
 ### 2.7 Preemption notice is short
 - **Fact.** GCP gives ≈ 30 s notice (metadata `instance/preempted`, ACPI soft-off). AWS gives 2 min.
 - **Rule.** A full resume state for a model of ~1B parameters is ~15 GB: too big for 30 s. Checkpoint often and upload
-  in the background. Use the notice only to flush logs and results.
+  in the background (§2.8). Use the notice only to flush logs and results. Both job templates run a notice watcher
+  that does exactly that.
 
 ```bash
+# GCP: blocks until the value changes; TRUE means the notice has arrived
 curl -sf -H "Metadata-Flavor: Google" \
   "http://metadata.google.internal/computeMetadata/v1/instance/preempted?wait_for_change=true"
+# AWS (IMDSv2): 404 until a notice is issued, then JSON with the action and time; poll every 5 s
+TOK=$(curl -sX PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" http://169.254.169.254/latest/api/token)
+curl -sf -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/spot/instance-action
 ```
 
 ### 2.8 Checkpoints: never sync with delete; push only after restore
@@ -215,18 +229,23 @@ curl -sf -H "Metadata-Flavor: Google" \
   exists. Refuse to start at step 0 when the bucket holds step rows.
 - **Rule.** The restore-done marker is a **file**, not a shell variable: a push loop forked with `( … ) &` never sees a
   variable set after the fork.
+- **Rule.** Upload each checkpoint in the background, and move the bucket's `LATEST` pointer only after that step's
+  upload has finished. A preemption mid-upload then leaves `LATEST` on the previous complete step, never on a half
+  copy. Size the interval so one upload finishes well inside it.
 
 ```bash
 gcloud storage rsync -r ckpt "$B/ckpt"            # never --delete-unmatched from the VM
 [ -f /opt/run/.restored ] || echo "restore not done: no push"
+# after writing ckpt/step$N locally: push it, then point LATEST at it, all off the training path
+( gcloud storage rsync -r "ckpt/step$N" "$B/ckpt/step$N" && echo "step$N" | gcloud storage cp - "$B/ckpt/LATEST" ) &
 ```
 
 ### 2.9 Checkpoint protocol for adapter (LoRA) training
 - **Rule.** A checkpoint is adapter + optimizer + RNG state, written to `stepN/`, with `LATEST` written last. Keep the
   newest 3. Archive every Mth adapter (weights only) to `saves/`: cheap, and the only way to re-evaluate earlier steps
   later. When `ckpt/` is empty, restore from the newest `saves/` entry (adapter only, optimizer reset).
-- **Rule.** Worst-case loss per preemption = checkpoint interval + relaunch overhead (dependency install + inference
-  server start).
+- **Rule.** Worst-case loss per preemption = checkpoint interval + upload time + relaunch overhead (dependency
+  install + inference server start).
 - **Gotcha.** Match `step\d+` exactly when listing checkpoints; keep derived directories (e.g. merged or converted
   weights) elsewhere, or the lister crashes on them.
 
@@ -254,6 +273,16 @@ mkdir -p artifacts "$MNT/artifacts"; cp -ru "$MNT/artifacts/." artifacts/ 2>/dev
 ( while true; do cp -ru artifacts/. "$MNT/artifacts/" 2>/dev/null || true; sleep 60; done ) & M=$!
 trap 'cp -ru artifacts/. "$MNT/artifacts/" 2>/dev/null || true; kill $M 2>/dev/null' EXIT
 ```
+
+### 2.12 Let capacity change without a restart
+- **Rule.** Save the unconsumed work queue (finished rollouts, scored items, anything produced but not yet used) with
+  every checkpoint, to durable storage. A resume after an outage then loses no finished work, only what was in
+  flight.
+- **Rule.** A worker that joins mid-run reads the current weights from the bucket or volume, then receives every
+  later update. Capacity can then grow, or replace preempted workers, while the job keeps running.
+- **Published.** An RL run on preemptible single-GPU workers lost 40 % of its inference capacity mid-step; all 128
+  GPUs were serving again 19 minutes later and the step took 37 minutes against 35 for its neighbours. It resumed
+  from a rollout store saved with each checkpoint ([Proximal, *Post-training infrastructure*](https://www.proximal.so/blog/posttraining-infra/)).
 
 ---
 
@@ -516,6 +545,7 @@ For calibration only. Prices are catalog reads from September 2026; re-read them
 | Cloud Run GPU service, 1× RTX PRO 6000 | ≈ $3.19/h while an instance is up; cold start ~2 min for a ~26B-parameter NVFP4 model; ~20 calls/s at 8 parallel callers |
 | Spot preemption, observed | from 37 min to over 6 h into a life |
 | Relaunch overhead (deps + inference server start) | 6–8 min |
+| Losing 40 % of serving capacity mid-step, self-healing (published, §2.12) | step 37 min vs 35 min; full capacity back in 19 min |
 | Plumbing tier (catches most gotchas) | about $1 |
 | Training throughput, 1× A100-80 | 350M model: 21.9k tok/s (16 % MFU); 1.2B: 8.3k tok/s (19–22 % MFU) |
 | vLLM, 4B model, bf16, short replies, RTX PRO 6000 | 136 / 764 / 2,280 tok/s at concurrency 1 / 8 / 32 |

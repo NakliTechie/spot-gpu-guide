@@ -21,11 +21,12 @@ Do these on day one. Quota requests can take days. Source: GUIDE.md chapter 1.
       the training VM to be gone; a launcher that waits on a marker + no VM does that unattended.
 - [ ] If you need more, the request or support case is filed now, not at launch.
 
-## Regions and capacity (GUIDE §1.7, §1.8)
+## Regions and capacity (GUIDE §1.7, §1.8, §1.9)
 - [ ] 3 or more regions are allowed, so the launcher can fail over when the cheapest one has no capacity.
 - [ ] Each region's default route table sends `0.0.0.0/0` to an **active** gateway (AWS: not `blackhole`).
+- [ ] Anything that calls the GPU workers per request (trainer, driver, proxy) runs in the same region as them.
 
-## Budgets and the stop rule (GUIDE §1.3, §1.9)
+## Budgets and the stop rule (GUIDE §1.3, §1.10)
 - [ ] An **account-wide** budget exists. Per-project budgets do not see each other.
 - [ ] The budget uses the billing currency, with credits **excluded**, so alerts track burn.
 - [ ] A daily GPU-spend alert is scoped by instance family, so it catches untagged launches too.
