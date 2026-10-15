@@ -40,8 +40,8 @@ This repo is those rules plus the scripts that encode them: an idempotent VM job
 
 ## What the guide covers
 
-1. Account, quota, billing: the 1-GPU reality, scoped identities with tag-gated teardown, AWS spot quota, price is not capacity, a region's network preflight, chatty components in one region, budgets that only email, prices from the catalog.
-2. A job that survives spot: bucket-held state, `DONE` markers, self-deleting VMs, `git archive HEAD`, the short preemption notice (GCP and AWS), background checkpoint upload, adapter protocols, batch jobs with per-unit resume, artifacts mirrored as they form, capacity that changes mid-run.
+1. Account, quota, billing: the 1-GPU reality, scoped identities with tag-gated teardown, AWS spot quota, price is not capacity, a region's network preflight, chatty components in one region, budgets that only email, prices from the catalog, a global quota that looks like no capacity.
+2. A job that survives spot: bucket-held state, `DONE` markers, self-deleting VMs, `git archive HEAD`, the short preemption notice (GCP and AWS), background checkpoint upload, adapter protocols, batch jobs with per-unit resume, artifacts mirrored as they form, capacity that changes mid-run, an idle shutdown that counts all work.
 3. Startup-script and VM gotchas: no `HOME`, the 64 KB line limit, buffered stdout, CPython shutdown crashes, falsy `0`, silent gating steps, build and mirror failures.
 4. Supervision: two tiers, reading the boot, watchdog requirements, a nightwatch with a hard deadline, detaching and surviving reboots, one supervisor per scope.
 5. Serverless GPU endpoints: billing is uptime, the two-process proxy, cached reads and a closed-port zero-spend proof, one driver per window.

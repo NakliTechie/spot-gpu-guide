@@ -20,6 +20,8 @@ Do these on day one. Quota requests can take days. Source: GUIDE.md chapter 1.
 - [ ] The design fits the quota you hold today (plan for 1 GPU on a new account). With 1 GPU, an eval VM waits for
       the training VM to be gone; a launcher that waits on a marker + no VM does that unattended.
 - [ ] If you need more, the request or support case is filed now, not at launch.
+- [ ] `GPUS_ALL_REGIONS` limit and usage are read (§1.1). If the request API refuses, an older project on the
+      billing account may hold quota (§1.11).
 
 ## Regions and capacity (GUIDE §1.7, §1.8, §1.9)
 - [ ] 3 or more regions are allowed, so the launcher can fail over when the cheapest one has no capacity.

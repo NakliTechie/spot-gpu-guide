@@ -35,6 +35,7 @@ Source: GUIDE.md chapters 2–6 and 9.
 - [ ] The launcher runs detached (`templates/detach.sh`) or as a launchd agent; the cap fits under the written stop
       rule, counting other projects' spend.
 - [ ] Every instance carries the project tag (in every task file) and a max run duration.
+- [ ] Any idle auto-shutdown also stays up on GPU use above 10 % or a `/run/<app>-busy` marker; batch jobs touch it (§2.13).
 - [ ] With an orchestrator: its local server runs under **this** project's identity; long runs are detached; every
       GPU pass is a job, so autostop sees it.
 

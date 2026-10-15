@@ -30,8 +30,15 @@ Chapters: [1 Account, quota, billing](#1-account-quota-billing--before-any-code)
 - **Consequence.** With a quota of 1, jobs queue: an eval VM can only start once the training VM is gone. A launcher
   that waits for a stop marker plus no running VM does this unattended.
 
+- **Failure mode.** "No spot capacity" can be this quota in disguise. With one GPU VM running and `GPUS_ALL_REGIONS` at
+  1, a second launch fails with `quotaExceeded: Quota 'GPUS_ALL_REGIONS' exceeded. Limit: 1.0 globally`. SkyPilot
+  reported it as a failure to acquire resources and retried one zone for hours, which looked like a spot drought.
+  Regional quotas (for example `PREEMPTIBLE_NVIDIA_L4_GPUS`) can be 1 in 40 regions while the global cap stays 1.
+- **Rule.** On any capacity failure, read `GPUS_ALL_REGIONS` limit and usage first (second command below).
+
 ```bash
 gcloud compute project-info describe --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep -i gpu
+gcloud compute project-info describe --project <P> --format=json | grep -B1 -A2 GPUS_ALL_REGIONS
 gcloud compute regions describe <region> --format=json | grep -B1 -A2 PREEMPTIBLE_NVIDIA
 ```
 
@@ -133,6 +140,13 @@ aws ec2 describe-route-tables --region <r> --filters Name=association.main,Value
   and keep a local launch ledger (§7.4) to bridge the lag.
 - **Rule.** Add a daily GPU-spend alert scoped by **instance family** (G/P on AWS), not by service or tag: it then
   catches every project's GPU spend in a mixed account, including launches someone forgot to tag.
+
+### 1.11 A refused quota request: borrow from an older project
+- **Failure mode.** `gcloud beta quotas preferences create` can return `RESOURCE_EXHAUSTED` ("Quota Increase Requests
+  per day") for a project, so the request never reaches a human.
+- **Fix.** An older project on the same billing account may already hold GPU quota (`GPUS_ALL_REGIONS` 1). A
+  project's quota shows only while billing is linked. Linking billing to an empty project costs nothing: link, read
+  the quota, and unlink if you do not need it (§1.2 caps linked projects).
 
 ---
 
@@ -284,6 +298,22 @@ trap 'cp -ru artifacts/. "$MNT/artifacts/" 2>/dev/null || true; kill $M 2>/dev/n
   GPUs were serving again 19 minutes later and the step took 37 minutes against 35 for its neighbours. It resumed
   from a rollout store saved with each checkpoint ([Proximal, *Post-training infrastructure*](https://www.proximal.so/blog/posttraining-infra/)).
 
+### 2.13 An idle shutdown must count all real work
+- **Failure mode.** A timer powered a demo VM off after 60 minutes with no activity from the app. It read only the
+  app's metrics and session files. We paused the app to run a GPU benchmark on the same VM. The timer saw no app
+  activity and powered the VM off mid-benchmark (`compute.instances.guestTerminate` from `system@google.com` in the
+  audit log, 09:56 IST). Two of four test sets for one model were lost.
+- **Rule.** The idle check stays up while the GPU is above 10 % utilisation **or** a marker file `/run/<app>-busy`
+  exists. Every batch job touches the marker for its whole run. The timer then counts work it does not know about.
+- **Rule.** Prefer the marker to `systemctl stop` on the timer: anything that restarts the timer silently undoes the stop.
+- **Rule.** Write results to disk after every step, as the step ends. A sudden stop then loses at most one step. The
+  finished results survived here because they sat on the VM's persistent disk.
+
+```bash
+busy() { [ -e /run/<app>-busy ] || [ "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | sort -n | tail -1)" -gt 10 ]; }
+touch /run/<app>-busy; trap 'rm -f /run/<app>-busy' EXIT     # in every batch job
+```
+
 ---
 
 ## 3. Startup-script and VM gotchas
@@ -307,6 +337,8 @@ Run one before any real tier.
 | Deep-learning VM images may lack build tools | JIT kernel builds fail at inference-server start | `apt-get install -y g++`; put the venv's `bin` on PATH for `ninja` |
 | zsh globs `gs://…/*` | Mac-side helper scripts die with "no matches found" | `setopt NO_NOMATCH`, or quote the URL |
 | Starting a background job over ssh | `ssh box 'nohup x &'` hangs the caller | `ssh box 'setsid -f nohup x > log 2>&1 < /dev/null'` |
+| `pkill -f <pattern>` over ssh | The pattern also appears in the remote command line, so the kill hits the ssh session's own shell and the connection drops | Select the PID first (`pgrep -f` then `kill <pid>`), or put the kill in a script on the machine |
+| Run tools from a folder the service account can read | A service account running `uv` from another user's folder read that user's `uv.toml`, got `Permission denied`, and failed in odd ways | `cd` to the service account's own folder first |
 | Bound parallel builds | Unbounded `make -j` on CUDA builds runs out of memory; inside some job runners `nproc` returns 1 | An explicit `-j N`; set the CUDA architectures so it does not build every one |
 | Retry package mirrors | Image builds fail on transient mirror 404s | Retry `apt-get` (`--fix-missing`) and fail only when every attempt fails |
 
@@ -568,3 +600,18 @@ still apply; these rules are specific to running one.
 | Never tear down the shared controller | The managed-jobs controller is untagged and may be running another project's jobs | Gate teardown on the project tag; leave a stopped controller parked (it costs pennies) |
 | Keep instance types flexible | Pinning one type misses cheaper equivalents; per-(type, zone) spot pools make a bigger box cheaper at times | Specify `accelerators: <GPU>:1` plus a memory floor, not an instance type |
 | Scope watchers to one run's folder | Workdir sync carries old result folders | Point watchers at the current run's directory only |
+| "Failed to acquire resources" retried in one zone for hours | Often a quota error, not a spot drought: `GPUS_ALL_REGIONS` was 1 with a VM already up (§1.1) | Read the quota before blaming capacity |
+| The API server is bound to one project | It reads the gcloud project it started with, so it cannot launch into another project | Create the VM directly with `gcloud` (below) |
+
+```bash
+# Spot VM in a project the orchestrator is not bound to; loop over zones, since one can be out of stock
+for z in <zone1> <zone2> <zone3>; do
+  gcloud compute instances create "$name" --project <P> --zone "$z" \
+    --provisioning-model SPOT --instance-termination-action DELETE --max-run-duration 5h \
+    --image-family common-cu129-ubuntu-2404-nvidia-580 --image-project deeplearning-platform-release \
+    --accelerator type=<GPU>,count=1 --machine-type <type> && break   # ZONE_RESOURCE_POOL_EXHAUSTED: try next
+done
+```
+
+Google deletes the VM after 5 hours whatever happens. The image has the NVIDIA driver preinstalled. Pair the VM with a
+local watcher that copies results every 10 minutes and deletes the VM when the job ends (§4.7, §4.8).
